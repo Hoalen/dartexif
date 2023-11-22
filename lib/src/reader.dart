@@ -11,63 +11,18 @@ enum Endian {
   big,
 }
 
-class Reader {
-  FileReader file;
-  int baseOffset;
-  Endian endian;
+class IfdEntry {
+  final int fieldOffset;
+  final int tag;
+  final FieldType fieldType;
+  final int count;
 
-  Reader(this.file, this.baseOffset, this.endian);
-
-  List<int> readSlice(int relativePos, int length) {
-    file.setPositionSync(baseOffset + relativePos);
-    return file.readSync(length);
-  }
-
-  // Convert slice to integer, based on sign and endian flags.
-  // Usually this offset is assumed to be relative to the beginning of the
-  // start of the EXIF information.
-  // For some cameras that use relative tags, this offset may be relative
-  // to some other starting point.
-  int readInt(int offset, int length, {bool signed = false}) {
-    final sliced = readSlice(offset, length);
-    int val;
-
-    if (endian == Endian.little) {
-      val = s2nLittleEndian(sliced, signed: signed);
-    } else {
-      val = s2nBigEndian(sliced, signed: signed);
-    }
-
-    return val;
-  }
-
-  Ratio readRatio(int offset, {required bool signed}) {
-    final n = readInt(offset, 4, signed: signed);
-    final d = readInt(offset + 4, 4, signed: signed);
-    return Ratio(n, d);
-  }
-
-  // Convert offset to string.
-  List<int> offsetToBytes(int _readOffset, int length) {
-    var readOffset = _readOffset;
-    final List<int> s = [];
-    for (int dummy = 0; dummy < length; dummy++) {
-      if (endian == Endian.little) {
-        s.add(readOffset & 0xFF);
-      } else {
-        s.insert(0, readOffset & 0xFF);
-      }
-      readOffset = readOffset >> 8;
-    }
-    return s;
-  }
-
-  static Endian endianOfByte(int b) {
-    if (b == 'I'.codeUnitAt(0)) {
-      return Endian.little;
-    }
-    return Endian.big;
-  }
+  IfdEntry({
+    required this.fieldOffset,
+    required this.tag,
+    required this.fieldType,
+    required this.count,
+  });
 }
 
 class IfdReader {
@@ -76,18 +31,16 @@ class IfdReader {
 
   IfdReader(this.file, {required this.fakeExif});
 
-  // Return first IFD.
-  int _firstIfd() => file.readInt(4, 4);
+  int get baseOffset => file.baseOffset;
 
-  // Return the pointer to next IFD.
-  int _nextIfd(int ifd) {
-    final entries = file.readInt(ifd, 2);
-    final nextIfd = file.readInt(ifd + 2 + 12 * entries, 4);
-    if (nextIfd == ifd) {
-      return 0;
-    } else {
-      return nextIfd;
-    }
+  set baseOffset(int v) {
+    file.baseOffset = v;
+  }
+
+  Endian get endian => file.endian;
+
+  set endian(Endian e) {
+    file.endian = e;
   }
 
   // Return the list of IFDs in the header.
@@ -99,6 +52,34 @@ class IfdReader {
       i = _nextIfd(i);
     }
     return ifds;
+  }
+
+  List<int> offsetToBytes(int readOffset, int length) {
+    return file.offsetToBytes(readOffset, length);
+  }
+
+  IfdValues readField(IfdEntry entry, {required String tagName}) {
+    if (entry.fieldType == FieldType.ascii) {
+      return _readAscii(entry);
+    }
+
+    // XXX investigate
+    // some entries get too big to handle could be malformed
+    // file or problem with this.s2n
+    if (entry.count < 1000) {
+      if (entry.fieldType == FieldType.ratio ||
+          entry.fieldType == FieldType.signedRatio) {
+        return _readIfdRatios(entry);
+      } else {
+        return _readIfdInts(entry);
+      }
+      // The test above causes problems with tags that are
+      // supposed to have long values! Fix up one important case.
+    } else if (tagName == 'MakerNote' ||
+        tagName == MakerNoteCanon.cameraInfoTagName) {
+      return _readIfdInts(entry);
+    }
+    return const IfdNone();
   }
 
   List<IfdEntry> readIfdEntries(int ifd, {required bool relative}) {
@@ -144,18 +125,6 @@ class IfdReader {
     });
   }
 
-  Endian get endian => file.endian;
-
-  set endian(Endian e) {
-    file.endian = e;
-  }
-
-  int get baseOffset => file.baseOffset;
-
-  set baseOffset(int v) {
-    file.baseOffset = v;
-  }
-
   int readInt(int offset, int length, {bool signed = false}) {
     return file.readInt(offset, length, signed: signed);
   }
@@ -164,25 +133,18 @@ class IfdReader {
     return file.readSlice(relativePos, length);
   }
 
-  IfdRatios _readIfdRatios(IfdEntry entry) {
-    final List<Ratio> values = [];
-    var pos = entry.fieldOffset;
-    for (int dummy = 0; dummy < entry.count; dummy++) {
-      values.add(file.readRatio(pos, signed: entry.fieldType.isSigned));
-      pos += entry.fieldType.length;
-    }
-    return IfdRatios(values);
-  }
+  // Return first IFD.
+  int _firstIfd() => file.readInt(4, 4);
 
-  IfdInts _readIfdInts(IfdEntry entry) {
-    final List<int> values = [];
-    var pos = entry.fieldOffset;
-    for (int dummy = 0; dummy < entry.count; dummy++) {
-      values.add(file.readInt(pos, entry.fieldType.length,
-          signed: entry.fieldType.isSigned));
-      pos += entry.fieldType.length;
+  // Return the pointer to next IFD.
+  int _nextIfd(int ifd) {
+    final entries = file.readInt(ifd, 2);
+    final nextIfd = file.readInt(ifd + 2 + 12 * entries, 4);
+    if (nextIfd == ifd) {
+      return 0;
+    } else {
+      return nextIfd;
     }
-    return IfdInts(values);
   }
 
   IfdBytes _readAscii(IfdEntry entry) {
@@ -213,45 +175,83 @@ class IfdReader {
     }
   }
 
-  IfdValues readField(IfdEntry entry, {required String tagName}) {
-    if (entry.fieldType == FieldType.ascii) {
-      return _readAscii(entry);
+  IfdInts _readIfdInts(IfdEntry entry) {
+    final List<int> values = [];
+    var pos = entry.fieldOffset;
+    for (int dummy = 0; dummy < entry.count; dummy++) {
+      values.add(file.readInt(pos, entry.fieldType.length,
+          signed: entry.fieldType.isSigned));
+      pos += entry.fieldType.length;
     }
-
-    // XXX investigate
-    // some entries get too big to handle could be malformed
-    // file or problem with this.s2n
-    if (entry.count < 1000) {
-      if (entry.fieldType == FieldType.ratio ||
-          entry.fieldType == FieldType.signedRatio) {
-        return _readIfdRatios(entry);
-      } else {
-        return _readIfdInts(entry);
-      }
-      // The test above causes problems with tags that are
-      // supposed to have long values! Fix up one important case.
-    } else if (tagName == 'MakerNote' ||
-        tagName == MakerNoteCanon.cameraInfoTagName) {
-      return _readIfdInts(entry);
-    }
-    return const IfdNone();
+    return IfdInts(values);
   }
 
-  List<int> offsetToBytes(int _readOffset, int length) {
-    return file.offsetToBytes(_readOffset, length);
+  IfdRatios _readIfdRatios(IfdEntry entry) {
+    final List<Ratio> values = [];
+    var pos = entry.fieldOffset;
+    for (int dummy = 0; dummy < entry.count; dummy++) {
+      values.add(file.readRatio(pos, signed: entry.fieldType.isSigned));
+      pos += entry.fieldType.length;
+    }
+    return IfdRatios(values);
   }
 }
 
-class IfdEntry {
-  final int fieldOffset;
-  final int tag;
-  final FieldType fieldType;
-  final int count;
+class Reader {
+  FileReader file;
+  int baseOffset;
+  Endian endian;
 
-  IfdEntry({
-    required this.fieldOffset,
-    required this.tag,
-    required this.fieldType,
-    required this.count,
-  });
+  Reader(this.file, this.baseOffset, this.endian);
+
+  // Convert offset to string.
+  List<int> offsetToBytes(int readOffset, int length) {
+    var offset = readOffset;
+    final List<int> s = [];
+    for (int dummy = 0; dummy < length; dummy++) {
+      if (endian == Endian.little) {
+        s.add(offset & 0xFF);
+      } else {
+        s.insert(0, offset & 0xFF);
+      }
+      offset = offset >> 8;
+    }
+    return s;
+  }
+
+  // Convert slice to integer, based on sign and endian flags.
+  // Usually this offset is assumed to be relative to the beginning of the
+  // start of the EXIF information.
+  // For some cameras that use relative tags, this offset may be relative
+  // to some other starting point.
+  int readInt(int offset, int length, {bool signed = false}) {
+    final sliced = readSlice(offset, length);
+    int val;
+
+    if (endian == Endian.little) {
+      val = s2nLittleEndian(sliced, signed: signed);
+    } else {
+      val = s2nBigEndian(sliced, signed: signed);
+    }
+
+    return val;
+  }
+
+  Ratio readRatio(int offset, {required bool signed}) {
+    final n = readInt(offset, 4, signed: signed);
+    final d = readInt(offset + 4, 4, signed: signed);
+    return Ratio(n, d);
+  }
+
+  List<int> readSlice(int relativePos, int length) {
+    file.setPositionSync(baseOffset + relativePos);
+    return file.readSync(length);
+  }
+
+  static Endian endianOfByte(int b) {
+    if (b == 'I'.codeUnitAt(0)) {
+      return Endian.little;
+    }
+    return Endian.big;
+  }
 }

@@ -3,17 +3,10 @@ import 'dart:math';
 import 'package:collection/collection.dart' show ListEquality;
 import 'package:sprintf/sprintf.dart' show sprintf;
 
-bool listRangeEqual(List list1, int begin, int end, List list2) {
-  var beginIndex = begin >= 0 ? begin : 0;
-  beginIndex = beginIndex < list1.length ? beginIndex : list1.length;
-
-  var endIndex = end >= begin ? end : begin;
-  endIndex = endIndex < list1.length ? endIndex : list1.length;
-
-  return listEqual(list1.sublist(beginIndex, endIndex), list2);
-}
-
 final listEqual = const ListEquality().equals;
+
+bool listContainedIn<T>(List<T> a, List<List<T>> b) =>
+    b.any((i) => listEqual(i, a));
 
 bool listHasPrefix(List list, List prefix, {int start = 0}) {
   if (prefix.isEmpty) {
@@ -25,10 +18,15 @@ bool listHasPrefix(List list, List prefix, {int start = 0}) {
   return listEqual(list.sublist(start, start + prefix.length), prefix);
 }
 
-bool listContainedIn<T>(List<T> a, List<List<T>> b) =>
-    b.any((i) => listEqual(i, a));
+bool listRangeEqual(List list1, int begin, int end, List list2) {
+  var beginIndex = begin >= 0 ? begin : 0;
+  beginIndex = beginIndex < list1.length ? beginIndex : list1.length;
 
-void printf(String a, List b) => print(sprintf(a, b));
+  var endIndex = end >= begin ? end : begin;
+  endIndex = endIndex < list1.length ? endIndex : list1.length;
+
+  return listEqual(list1.sublist(beginIndex, endIndex), list2);
+}
 
 // Don't throw an exception when given an out of range character.
 String makeString(List<int> seq) {
@@ -44,8 +42,8 @@ String makeString(List<int> seq) {
 
 // Special version to deal with the code in the first 8 bytes of a user comment.
 // First 8 bytes gives coding system e.g. ASCII vs. JIS vs Unicode.
-String makeStringUc(List<int> _seq) {
-  var seq = _seq;
+String makeStringUc(List<int> array) {
+  var seq = array;
   if (seq.length <= 8) {
     return "";
   }
@@ -60,6 +58,8 @@ String makeStringUc(List<int> _seq) {
   // allows JIS and Unicode.
   return makeString(seq);
 }
+
+void printf(String a, List b) => print(sprintf(a, b));
 
 // Extract multi-byte integer in little endian.
 int s2nBigEndian(List<int> s, {bool signed = false}) {

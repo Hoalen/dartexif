@@ -4,5 +4,4 @@ linter:
     avoid_print: false
     avoid_catching_errors: false
     avoid_classes_with_only_static_members: false
-    invariant_booleans: false
     require_trailing_commas: false
